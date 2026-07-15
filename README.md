@@ -1,139 +1,43 @@
-# CryptEX
+# Cortex Project
 
-Current release: `v0.6.3`
+Cortex Project is a school demonstration repository for an AI-assisted decentralized banking solution.
 
-Public contact: `Anon-Sec-BTCC@proton.me`
+This repository packages a desktop client, backend node, wallet logic, and supporting communication features into a single Windows-friendly project for presentation and evaluation.
 
-CryptEX is a C++ SHA3-512 cryptocurrency with full 512-bit proof-of-work math, a separate Qt GUI and backend daemon, encrypted HD wallets, secure chat, JSON-RPC, adaptive difficulty control, and multi-network support across mainnet, testnet, and regtest.
+## Project Focus
 
-## Current Highlights
+- AI-assisted banking workflow concept
+- decentralized account and wallet model
+- secure transaction handling
+- local desktop client plus backend service
+- peer-to-peer communication layer
+- Windows-ready release packaging for school lab systems
 
-- SHA3-512 proof of work with full 512-bit consensus math and chainwork
-- Hybrid adaptive difficulty control with LWMA, EMA, real-time overdue easing, and emergency recovery
-- Mainnet, testnet, and regtest network profiles
-- Separate GUI app and backend CLI/node binary
-- Base64, Base58, `0x` hex, and Bech32 address encodings
-- Encrypted `Wallet.dat` storage with BIP32/BIP39 HD wallet support and recovery tooling
-- Multi-threaded solo mining with sync-before-mining behavior and `--block-cycles`
-- Unified mining flow so the GUI miner and CLI/backend mine against the same live backend chain state instead of separate local chain copies
-- P2P networking with peer exchange, DNS seeds, LAN/WLAN auto-discovery, headers-first sync, and cumulative-work chain selection
-- JSON-RPC for node, wallet, mining, chat, and operator functions
-- Address-first P2P messenger with public forum, private history, voice relay, and media composers
-- Secure public/private chat support with forum-style views and direct directory actions
-- Advanced Mode gating for Node Window and P2P Messenger
-- FastAPI website and Wrapped CryptEX EVM workspace
-- System datadir defaults so chain and wallet data survive binary deletion
+## Windows Demo Use
 
-## Release Matrix
+This repository is prepared primarily for Windows school PCs.
 
-The current release pipeline produces these platform artifacts:
+To run the packaged demo:
 
-- macOS ARM64: daemon, tests, Qt app bundle, dedicated ARM64 assembly PoW worker
-- Linux x86_64: daemon, tests, AppImage, external PoW worker binary
-- Linux ARM64: daemon, tests, AppImage, dedicated ARM64 assembly PoW worker
-- Windows x86_64: daemon, tests, runtime bundle zip, external PoW worker binary
-
-For this school-facing repository, staged GitHub releases are intentionally narrowed to the Windows runtime bundle so the downloadable artifact matches the Windows lab environment.
-
-Worker backend notes:
-
-- ARM64 macOS and Linux builds use handwritten assembly workers under `src/asm/`
-- Linux x86_64 and Windows x86_64 use dedicated handwritten external assembly workers under `src/asm/`, with AVX2-focused four-lane nonce search on AVX2-capable CPUs
-- Consensus stays in the daemon on every platform; workers only search nonce ranges
+1. Open the GitHub Releases page.
+2. Download `CryptEX_windows_x86_64_bundle.zip`.
+3. Extract the zip fully into one folder.
+4. Launch `cryptexqt_win32.exe`.
+5. Keep all DLLs and the `plugins` folder beside the executable.
 
 ## Repository Layout
 
-- `/src` — core node, wallet, networking, mining, RPC, storage, tests
-- `/gui` — Qt desktop client
-- `/website` — FastAPI/Jinja website and deployment files
-- `/scripts` — build, packaging, and release helpers
-- `/toolchains` — cross-compilation toolchain files
-- `/build-release` — per-platform build outputs
-- `/dist` — exported release artifacts
-- `/WHITEPAPER.pdf` — generated whitepaper PDF
-- `/archives/CryptEX_Whitepaper_Source_April_2026.md` — whitepaper source
-- `/RELEASE_NOTES.md` — current release notes
-
-## Build
-
-Native macOS ARM64 backend example:
-
-```bash
-cmake -S . -B build-release/macOS-ARM64 -DCMAKE_BUILD_TYPE=Release
-cmake --build build-release/macOS-ARM64 --target cryptexd cryptex_tests -j4
-```
-
-Full release matrix:
-
-```bash
-./scripts/build-release-matrix.sh all
-```
-
-Windows x86_64 dependency bootstrap:
-
-```bash
-./scripts/bootstrap-windows-x86_64-deps.sh
-export OPENSSL_ROOT_DIR_WIN_X86_64="$PWD/third_party/windows-x86_64/openssl"
-export OPUS_ROOT_DIR_WIN_X86_64="$PWD/third_party/windows-x86_64/opus"
-export QT6_ROOT_WIN_X86_64="$HOME/Qt/6.10.2/mingw_64"
-./scripts/build-release-matrix.sh windows-x86_64
-```
-
-## Run
-
-Start the backend node:
-
-```bash
-./build-release/macOS-ARM64/cryptexd_osx node
-```
-
-Start mining forever against the local backend RPC:
-
-```bash
-./build-release/macOS-ARM64/cryptexd_osx mine --rpc-url http://127.0.0.1:9332/ --rpcuser <user> --rpcpassword <pass> --address <your_address> --cycles 0
-```
-
-Mine multiple blocks in sequence:
-
-```bash
-./build-release/macOS-ARM64/cryptexd_osx mine --address <your_address> --cycles 0 --block-cycles 4
-```
-
-Start the GUI:
-
-```bash
-open ./build-release/macOS-ARM64/cryptexqt_osx.app
-```
-
-## Website
-
-The project website is now a real FastAPI application rather than a static HTML page.
-
-Run it locally:
-
-```bash
-cd ./website
-./run.sh
-```
-
-By default the website runner now binds to `0.0.0.0:8080`, so other machines on the same network can reach it through:
-
-```bash
-http://<your-machine-ip>:8080
-```
-
-## Data Locations
-
-By default, CryptEX stores chain and wallet data in system application-data locations:
-
-- macOS: `~/Library/Application Support/CryptEX`
-- Linux: `$XDG_DATA_HOME/CryptEX` or `~/.local/share/CryptEX`
-- Windows: `%APPDATA%\\CryptEX`
+- `/src` - core backend, wallet, networking, mining, RPC, and storage logic
+- `/gui` - desktop application
+- `/website` - website and presentation-facing web assets
+- `/scripts` - packaging and release helper scripts
+- `/docs/WHITEPAPER_SCHOOL.docx` - school whitepaper
 
 ## Documentation
 
-- Whitepaper PDF: [WHITEPAPER.pdf](./WHITEPAPER.pdf)
-- Whitepaper source: [archives/CryptEX_Whitepaper_Source_April_2026.md](./archives/CryptEX_Whitepaper_Source_April_2026.md)
-- Release notes: [RELEASE_NOTES.md](./RELEASE_NOTES.md)
-- PoW rules: [docs/pow.md](./docs/pow.md)
-- Communication systems: [docs/communication-systems.md](./docs/communication-systems.md)
+- School whitepaper: [`docs/WHITEPAPER_SCHOOL.docx`](./docs/WHITEPAPER_SCHOOL.docx)
+- Technical notes: [`docs`](./docs)
+
+## Release Policy For This Repo
+
+This school-facing repository is configured so staged releases focus on the Windows runtime bundle used by the school lab environment.
