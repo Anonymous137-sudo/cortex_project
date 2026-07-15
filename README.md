@@ -36,6 +36,9 @@ To run the packaged demo:
 ## Documentation
 
 - School whitepaper: [`docs/WHITEPAPER_SCHOOL.docx`](./docs/WHITEPAPER_SCHOOL.docx)
+- AI architecture plan: [`docs/CORTEX_AI_ARCHITECTURE_PLAN.md`](./docs/CORTEX_AI_ARCHITECTURE_PLAN.md)
+- AI provider design: [`docs/CORTEX_AI_PROVIDER_DESIGN.md`](./docs/CORTEX_AI_PROVIDER_DESIGN.md)
+- Communication systems: [`docs/communication-systems.md`](./docs/communication-systems.md)
 - Technical notes: [`docs`](./docs)
 
 ## Release Policy For This Repo

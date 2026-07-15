@@ -210,8 +210,8 @@ Plugins = plugins
 EOF
 
 cat > "${OUT_DIR}/README.txt" <<'EOF'
-CryptEX Windows Runtime Bundle
-==============================
+Cortex Project Windows Demo Bundle
+=================================
 
 Contents
 - cryptexqt_win32.exe : Qt GUI client
@@ -225,11 +225,21 @@ How to launch
 3. The GUI can launch the backend for you
 4. Mining uses cryptex_powminer_win32.exe from the same folder
 
-Notes
+School demo notes
+- This bundle ships the current node, wallet, communication, and mining stack
+- The AI-oriented Cortex layer is documented in the bundled school whitepaper and architecture plan
+- Planned AI outputs are advisory only and are intended to stay outside consensus validation
+
+Runtime notes
 - Keep the plugins directory and DLLs beside the executables
 - Use this bundle zip on Windows; the standalone .exe release assets are not self-contained
 - On older Windows installs, the Microsoft Universal CRT may still need to be present system-wide
 EOF
+
+mkdir -p "${OUT_DIR}/docs"
+copy_required "${ROOT_DIR}/docs/WHITEPAPER_SCHOOL.docx" "${OUT_DIR}/docs/WHITEPAPER_SCHOOL.docx"
+copy_required "${ROOT_DIR}/docs/CORTEX_AI_ARCHITECTURE_PLAN.md" "${OUT_DIR}/docs/CORTEX_AI_ARCHITECTURE_PLAN.md"
+copy_required "${ROOT_DIR}/docs/communication-systems.md" "${OUT_DIR}/docs/communication-systems.md"
 
 verify_bundle_dependencies "${OUT_DIR}"
 

@@ -67,6 +67,15 @@ set(CRYPTEX_CORE_SOURCES
     wallet.cpp
     blockchain.cpp
     block_store.cpp
+    intelligence/intelligence_types.cpp
+    intelligence/intelligence_config.cpp
+    intelligence/intelligence_policy.cpp
+    intelligence/null_provider.cpp
+    intelligence/rules_provider.cpp
+    intelligence/sidecar_protocol.cpp
+    intelligence/intelligence_bus.cpp
+    intelligence/intelligence_service.cpp
+    intelligence/collectors/snapshot_collector.cpp
 )
 
 add_executable(cryptexd

@@ -16,6 +16,12 @@
 #include "serialization.hpp"
 #include "voice_call.hpp"
 #include "wallet.hpp"
+#include "intelligence/intelligence_bus.hpp"
+#include "intelligence/intelligence_config.hpp"
+#include "intelligence/intelligence_service.hpp"
+#include "intelligence/rules_provider.hpp"
+#include "intelligence/collectors/snapshot_collector.hpp"
+#include "intelligence/sidecar_protocol.hpp"
 #include <boost/asio/ssl.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
@@ -267,6 +273,24 @@ Transaction make_signed_spend(const OutPoint& prevout,
     tx.inputs[0].scriptSig.insert(tx.inputs[0].scriptSig.end(), signer.pub.begin(), signer.pub.end());
     return tx;
 }
+
+struct FakeInferenceProvider final : intelligence::InferenceProvider {
+    intelligence::ProviderCapabilities caps;
+    intelligence::AdvisoryResult result;
+
+    intelligence::ProviderCapabilities capabilities() const override {
+        return caps;
+    }
+
+    intelligence::ProviderResponse analyze(const intelligence::ProviderRequest&) const override {
+        intelligence::ProviderResponse response;
+        response.provider = caps.kind;
+        response.accepted = true;
+        response.diagnostic = "ok";
+        response.advisory = result;
+        return response;
+    }
+};
 
 uint16_t pick_free_port() {
     boost::asio::io_context ctx;
@@ -1193,6 +1217,239 @@ static void test_structured_logging_to_file() {
     LogConfig quiet;
     quiet.console = false;
     configure_logging(quiet);
+    remove_all_if_exists(tmp);
+}
+
+static void test_intelligence_policy_blocks_consensus_mutation() {
+    intelligence::IntelligencePolicy policy;
+    assert(!policy.can_invoke_rpc_method("sendtoaddress"));
+    assert(!policy.can_invoke_rpc_method("submitblock"));
+    assert(!policy.can_invoke_rpc_method("setp2pmailpolicy"));
+    assert(policy.can_invoke_rpc_method("getnetworkinfo"));
+    assert(policy.can_invoke_rpc_method("getpeergraph"));
+}
+
+static void test_intelligence_sidecar_protocol_roundtrip() {
+    intelligence::SidecarRequestEnvelope request;
+    request.request_id = intelligence::make_request_id("test");
+    request.kind = intelligence::AdvisoryKind::TransactionRisk;
+    request.preferred_provider = intelligence::ProviderKind::Groq;
+    request.remote_allowed = true;
+    request.allow_public_web_grounding = false;
+    request.allow_remote_storage = false;
+    request.contains_sensitive_wallet_data = true;
+    request.payload_json = R"({"spend_value_sats":125000000})";
+
+    const auto encoded_request = intelligence::encode_sidecar_request_json(request);
+    const auto decoded_request = intelligence::decode_sidecar_request_json(encoded_request);
+    assert(decoded_request.version == intelligence::kSidecarProtocolVersion);
+    assert(decoded_request.request_id == request.request_id);
+    assert(decoded_request.kind == request.kind);
+    assert(decoded_request.preferred_provider == request.preferred_provider);
+    assert(decoded_request.remote_allowed == request.remote_allowed);
+    assert(decoded_request.contains_sensitive_wallet_data == request.contains_sensitive_wallet_data);
+    assert(decoded_request.payload_json == request.payload_json);
+
+    intelligence::SidecarResponseEnvelope response;
+    response.request_id = request.request_id;
+    response.provider = intelligence::ProviderKind::RulesOnly;
+    response.success = true;
+    response.diagnostic = "local rules result";
+    response.advisory_json = R"({"severity":"medium","summary":"ok"})";
+
+    const auto encoded_response = intelligence::encode_sidecar_response_json(response);
+    const auto decoded_response = intelligence::decode_sidecar_response_json(encoded_response);
+    assert(decoded_response.version == intelligence::kSidecarProtocolVersion);
+    assert(decoded_response.request_id == response.request_id);
+    assert(decoded_response.provider == response.provider);
+    assert(decoded_response.success == response.success);
+    assert(decoded_response.advisory_json == response.advisory_json);
+}
+
+static void test_intelligence_bus_prefers_local_provider_when_available() {
+    intelligence::IntelligenceBus bus;
+
+    auto local = std::make_shared<FakeInferenceProvider>();
+    local->caps.kind = intelligence::ProviderKind::RulesOnly;
+    local->caps.display_name = "rules";
+    local->caps.remote = false;
+    local->caps.supported_kinds = {intelligence::AdvisoryKind::NetworkHealth};
+    local->result.kind = intelligence::AdvisoryKind::NetworkHealth;
+    local->result.provider = intelligence::ProviderKind::RulesOnly;
+    local->result.summary = "local network assessment";
+    local->result.generated_at = intelligence::iso8601_utc_now();
+
+    auto remote = std::make_shared<FakeInferenceProvider>();
+    remote->caps.kind = intelligence::ProviderKind::Groq;
+    remote->caps.display_name = "groq";
+    remote->caps.remote = true;
+    remote->caps.supported_kinds = {intelligence::AdvisoryKind::NetworkHealth};
+    remote->result.kind = intelligence::AdvisoryKind::NetworkHealth;
+    remote->result.provider = intelligence::ProviderKind::Groq;
+    remote->result.summary = "remote network assessment";
+    remote->result.generated_at = intelligence::iso8601_utc_now();
+
+    bus.register_provider(remote);
+    bus.register_provider(local);
+
+    intelligence::ProviderRequest request;
+    request.request_id = intelligence::make_request_id("network");
+    request.kind = intelligence::AdvisoryKind::NetworkHealth;
+
+    const auto result = bus.analyze(request);
+    assert(result.valid);
+    assert(result.provider == intelligence::ProviderKind::RulesOnly);
+    assert(result.summary == "local network assessment");
+}
+
+static void test_intelligence_bus_blocks_sensitive_remote_export_by_default() {
+    intelligence::IntelligencePolicy policy;
+    policy.remote_providers_enabled = true;
+    intelligence::IntelligenceBus bus(policy);
+
+    auto remote = std::make_shared<FakeInferenceProvider>();
+    remote->caps.kind = intelligence::ProviderKind::Gemini;
+    remote->caps.display_name = "gemini";
+    remote->caps.remote = true;
+    remote->caps.supported_kinds = {intelligence::AdvisoryKind::ProtocolExplanation};
+    remote->result.kind = intelligence::AdvisoryKind::ProtocolExplanation;
+    remote->result.provider = intelligence::ProviderKind::Gemini;
+    remote->result.summary = "remote explanation";
+    remote->result.generated_at = intelligence::iso8601_utc_now();
+    bus.register_provider(remote);
+
+    intelligence::ProviderRequest request;
+    request.request_id = intelligence::make_request_id("protocol");
+    request.kind = intelligence::AdvisoryKind::ProtocolExplanation;
+    request.preferred_provider = intelligence::ProviderKind::Gemini;
+    request.requires_remote_provider = true;
+    request.contains_sensitive_wallet_data = true;
+
+    const auto result = bus.analyze(request);
+    assert(!result.valid);
+    assert(result.summary == "analysis blocked by policy");
+    assert(result.diagnostic.find("sensitive wallet data") != std::string::npos);
+}
+
+static void test_intelligence_config_parse() {
+    auto cfg = ConfigFile::parse(
+        "ai_enabled = false\n"
+        "ai_audit_log = true\n"
+        "ai_default_provider = groq\n"
+        "ai_remote_enabled = yes\n"
+        "ai_allow_public_web_grounding = yes\n"
+        "ai_blocked_rpc_method = stop\n"
+        "ai_blocked_rpc_method = refreshrouting\n"
+        "ai_sidecar_executable = ./cortex_ai_agent\n"
+        "ai_sidecar_arg = --stdio\n"
+        "ai_gemini_enabled = yes\n"
+        "ai_gemini_model = gemini-2.5-pro\n"
+        "ai_groq_enabled = yes\n"
+        "ai_groq_model = openai/gpt-oss-120b\n");
+
+    const auto ai = intelligence::IntelligenceConfig::from_config(cfg);
+    assert(!ai.enabled);
+    assert(ai.audit_log_enabled);
+    assert(ai.default_provider == intelligence::ProviderKind::Groq);
+    assert(ai.policy.remote_providers_enabled);
+    assert(ai.policy.allow_public_web_grounding);
+    assert(!ai.policy.can_invoke_rpc_method("sendtoaddress"));
+    assert(!ai.policy.can_invoke_rpc_method("stop"));
+    assert(!ai.policy.can_invoke_rpc_method("refreshrouting"));
+    assert(ai.sidecar.has_value());
+    assert(ai.sidecar->executable == std::filesystem::path("./cortex_ai_agent"));
+    assert(ai.sidecar->args.size() == 1);
+    assert(ai.sidecar->args[0] == "--stdio");
+    assert(ai.gemini.enabled);
+    assert(ai.gemini.model == "gemini-2.5-pro");
+    assert(ai.groq.enabled);
+    assert(ai.groq.model == "openai/gpt-oss-120b");
+}
+
+static void test_snapshot_collector_and_rules_provider() {
+    NetworkScope scope(NetworkKind::Regtest);
+    auto tmp = unique_temp_path("cryptex_intelligence_collectors");
+    remove_all_if_exists(tmp);
+    std::filesystem::create_directories(tmp);
+
+    Blockchain chain(tmp);
+    boost::asio::io_context ctx;
+    net::NetworkNode node(ctx, 0, tmp);
+
+    intelligence::NetworkTelemetry network_telemetry;
+    network_telemetry.reconnect_events_1h = 12;
+    network_telemetry.lan_only = true;
+    const auto network = intelligence::SnapshotCollector::collect_network(chain, node, network_telemetry);
+    assert(network.local_height == 0);
+    assert(network.connected_peers == 0);
+    assert(network.reconnect_events_1h == 12);
+    assert(network.lan_only);
+
+    intelligence::MiningTelemetry mining_telemetry;
+    mining_telemetry.active_threads = 14;
+    mining_telemetry.rejected_candidates_1h = 2;
+    mining_telemetry.external_worker_online = true;
+    const auto mining = intelligence::SnapshotCollector::collect_mining(chain, &node, mining_telemetry);
+    assert(mining.active_threads == 14);
+    assert(mining.rejected_candidates_1h == 2);
+    assert(!mining.sync_approved);
+
+    auto wallet = Wallet::create_new("ai-pass", (tmp / "Wallet.dat").string());
+    intelligence::TransactionDraftSignals draft;
+    draft.input_count = 2;
+    draft.output_count = 1;
+    draft.spend_value_sats = 50'000;
+    draft.new_recipient = true;
+    draft.contains_private_note = true;
+    const auto wallet_risk = intelligence::SnapshotCollector::collect_wallet(wallet, chain, draft);
+    assert(wallet_risk.wallet_loaded);
+    assert(wallet_risk.new_recipient);
+    assert(wallet_risk.contains_private_note);
+
+    intelligence::CommsTelemetry comms_telemetry;
+    comms_telemetry.delivery_failures_1h = 15;
+    comms_telemetry.mail_2fa_enabled = false;
+    const auto comms = intelligence::SnapshotCollector::collect_comms(node, comms_telemetry);
+    assert(comms.delivery_failures_1h == 15);
+    assert(!comms.mail_2fa_enabled);
+
+    intelligence::RulesOnlyProvider provider;
+    intelligence::ProviderRequest request;
+    request.kind = intelligence::AdvisoryKind::MiningHealth;
+    request.snapshots.mining = mining;
+    const auto response = provider.analyze(request);
+    assert(response.accepted);
+    assert(response.advisory.has_value());
+    assert(response.advisory->provider == intelligence::ProviderKind::RulesOnly);
+    assert(response.advisory->severity == intelligence::Severity::High);
+
+    remove_all_if_exists(tmp);
+}
+
+static void test_intelligence_service_registers_rules_provider() {
+    NetworkScope scope(NetworkKind::Regtest);
+    auto tmp = unique_temp_path("cryptex_intelligence_service");
+    remove_all_if_exists(tmp);
+    std::filesystem::create_directories(tmp);
+
+    Blockchain chain(tmp);
+    boost::asio::io_context ctx;
+    net::NetworkNode node(ctx, 0, tmp);
+
+    intelligence::IntelligenceConfig config;
+    config.default_provider = intelligence::ProviderKind::RulesOnly;
+    intelligence::IntelligenceService service(config);
+
+    intelligence::NetworkTelemetry telemetry;
+    telemetry.reconnect_events_1h = 3;
+    const auto result = service.analyze_network_health(chain, node, telemetry);
+    assert(result.provider == intelligence::ProviderKind::RulesOnly);
+    assert(!result.summary.empty());
+
+    auto request = service.build_protocol_explanation_request("Explain how the chain stays deterministic.");
+    assert(request.preferred_provider == intelligence::ProviderKind::RulesOnly);
+    assert(request.kind == intelligence::AdvisoryKind::ProtocolExplanation);
+
     remove_all_if_exists(tmp);
 }
 
@@ -2780,6 +3037,18 @@ int main() {
     LogConfig quiet_logs;
     quiet_logs.console = false;
     configure_logging(quiet_logs);
+
+    test_intelligence_policy_blocks_consensus_mutation();
+    test_intelligence_sidecar_protocol_roundtrip();
+    test_intelligence_bus_prefers_local_provider_when_available();
+    test_intelligence_bus_blocks_sensitive_remote_export_by_default();
+    test_intelligence_config_parse();
+    test_snapshot_collector_and_rules_provider();
+    test_intelligence_service_registers_rules_provider();
+    if (std::getenv("CRYPTEX_SMOKE_AI_ONLY")) {
+        std::cout << "AI smoke tests passed\n";
+        return 0;
+    }
 
     test_base64_address();
     test_multi_format_address_support();
