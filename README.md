@@ -1,123 +1,139 @@
-# CORTEX
+# CryptEX
 
-> AI-based decentralized blockchain technology for modern financial institutions.
+Current release: `v0.6.3`
 
-CORTEX is a blockchain research and development project focused on combining artificial intelligence with decentralized financial infrastructure.
+Public contact: `Anon-Sec-BTCC@proton.me`
 
-The current implementation centers around the **CryptEX** protocol, a Bitcoin-inspired UTXO blockchain implementing SHA3-512 Proof-of-Work, adaptive liveness control, full-node validation, encrypted HD wallets, JSON-RPC services, and intelligent operational analytics. :contentReference[oaicite:1]{index=1}
+CryptEX is a C++ SHA3-512 cryptocurrency with full 512-bit proof-of-work math, a separate Qt GUI and backend daemon, encrypted HD wallets, secure chat, JSON-RPC, adaptive difficulty control, and multi-network support across mainnet, testnet, and regtest.
 
----
+## Current Highlights
 
-## Overview
+- SHA3-512 proof of work with full 512-bit consensus math and chainwork
+- Hybrid adaptive difficulty control with LWMA, EMA, real-time overdue easing, and emergency recovery
+- Mainnet, testnet, and regtest network profiles
+- Separate GUI app and backend CLI/node binary
+- Base64, Base58, `0x` hex, and Bech32 address encodings
+- Encrypted `Wallet.dat` storage with BIP32/BIP39 HD wallet support and recovery tooling
+- Multi-threaded solo mining with sync-before-mining behavior and `--block-cycles`
+- Unified mining flow so the GUI miner and CLI/backend mine against the same live backend chain state instead of separate local chain copies
+- P2P networking with peer exchange, DNS seeds, LAN/WLAN auto-discovery, headers-first sync, and cumulative-work chain selection
+- JSON-RPC for node, wallet, mining, chat, and operator functions
+- Address-first P2P messenger with public forum, private history, voice relay, and media composers
+- Secure public/private chat support with forum-style views and direct directory actions
+- Advanced Mode gating for Node Window and P2P Messenger
+- FastAPI website and Wrapped CryptEX EVM workspace
+- System datadir defaults so chain and wallet data survive binary deletion
 
-CORTEX explores next-generation blockchain architecture by integrating:
+## Release Matrix
 
-- 🤖 Artificial Intelligence
-- ⛓️ Decentralized blockchain infrastructure
-- 💰 Financial institution integration
-- 🔒 Modern cryptographic security
-- ⚡ High-performance C++ implementation
+The current release pipeline produces these platform artifacts:
 
-The project's current reference implementation is **CryptEX**, designed as a complete cryptocurrency ecosystem consisting of:
+- macOS ARM64: daemon, tests, Qt app bundle, dedicated ARM64 assembly PoW worker
+- Linux x86_64: daemon, tests, AppImage, external PoW worker binary
+- Linux ARM64: daemon, tests, AppImage, dedicated ARM64 assembly PoW worker
+- Windows x86_64: daemon, tests, runtime bundle zip, external PoW worker binary
 
-- Full blockchain node
-- Wallet subsystem
-- Mining engine
-- Qt Desktop Client
-- JSON-RPC API
-- Peer-to-peer networking
-- Intelligent Operations Subsystem (AI-assisted analytics)
+For this school-facing repository, staged GitHub releases are intentionally narrowed to the Windows runtime bundle so the downloadable artifact matches the Windows lab environment.
 
----
+Worker backend notes:
 
-## Current Features
+- ARM64 macOS and Linux builds use handwritten assembly workers under `src/asm/`
+- Linux x86_64 and Windows x86_64 use dedicated handwritten external assembly workers under `src/asm/`, with AVX2-focused four-lane nonce search on AVX2-capable CPUs
+- Consensus stays in the daemon on every platform; workers only search nonce ranges
 
-- SHA3-512 Proof-of-Work
-- UTXO transaction model
-- Adaptive difficulty controller
-- Full node validation
-- Headers-first synchronization
-- Encrypted HD wallets (BIP32/BIP39)
-- AES-256 encrypted wallet storage
-- JSON-RPC interface
-- Multi-threaded CPU mining
-- Peer discovery & synchronization
-- Intelligent blockchain analytics
-- Mining optimization
-- Transaction risk analysis
-- Network anomaly detection
+## Repository Layout
 
----
+- `/src` — core node, wallet, networking, mining, RPC, storage, tests
+- `/gui` — Qt desktop client
+- `/website` — FastAPI/Jinja website and deployment files
+- `/scripts` — build, packaging, and release helpers
+- `/toolchains` — cross-compilation toolchain files
+- `/build-release` — per-platform build outputs
+- `/dist` — exported release artifacts
+- `/WHITEPAPER.pdf` — generated whitepaper PDF
+- `/archives/CryptEX_Whitepaper_Source_April_2026.md` — whitepaper source
+- `/RELEASE_NOTES.md` — current release notes
 
-## Repository Structure
+## Build
 
-```
-.
-├── WHITEPAPER.docx
-├── README.md
-├── LICENSE
-└── (source code)
-```
+Native macOS ARM64 backend example:
 
----
-
-## Whitepaper
-
-The complete technical specification is available in:
-
-```
-WHITEPAPER.docx
+```bash
+cmake -S . -B build-release/macOS-ARM64 -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release/macOS-ARM64 --target cryptexd cryptex_tests -j4
 ```
 
-It describes:
+Full release matrix:
 
-- Protocol architecture
-- Consensus model
-- Monetary policy
-- Difficulty adjustment
-- Wallet architecture
-- Networking
-- Security model
-- Mining subsystem
-- AI-assisted operational intelligence
+```bash
+./scripts/build-release-matrix.sh all
+```
 
----
+Windows x86_64 dependency bootstrap:
 
-## Vision
+```bash
+./scripts/bootstrap-windows-x86_64-deps.sh
+export OPENSSL_ROOT_DIR_WIN_X86_64="$PWD/third_party/windows-x86_64/openssl"
+export OPUS_ROOT_DIR_WIN_X86_64="$PWD/third_party/windows-x86_64/opus"
+export QT6_ROOT_WIN_X86_64="$HOME/Qt/6.10.2/mingw_64"
+./scripts/build-release-matrix.sh windows-x86_64
+```
 
-CORTEX aims to investigate how artificial intelligence can enhance decentralized financial systems without compromising deterministic blockchain consensus.
+## Run
 
-Areas of ongoing research include:
+Start the backend node:
 
-- AI-assisted blockchain analytics
-- Intelligent network monitoring
-- Transaction risk analysis
-- Mining optimization
-- Institutional blockchain deployment
-- Secure distributed finance
+```bash
+./build-release/macOS-ARM64/cryptexd_osx node
+```
 
----
+Start mining forever against the local backend RPC:
 
-## Technology Stack
+```bash
+./build-release/macOS-ARM64/cryptexd_osx mine --rpc-url http://127.0.0.1:9332/ --rpcuser <user> --rpcpassword <pass> --address <your_address> --cycles 0
+```
 
-- C++
-- Boost.Asio
-- OpenSSL
-- Qt
-- JSON-RPC
-- SHA3-512
-- secp256k1
-- AES-256
-- PBKDF2
+Mine multiple blocks in sequence:
 
----
+```bash
+./build-release/macOS-ARM64/cryptexd_osx mine --address <your_address> --cycles 0 --block-cycles 4
+```
 
-## License
+Start the GUI:
 
-Released under the MIT License.
+```bash
+open ./build-release/macOS-ARM64/cryptexqt_osx.app
+```
 
----
+## Website
 
-## Status
+The project website is now a real FastAPI application rather than a static HTML page.
 
-🚧 Active Research & Development
+Run it locally:
+
+```bash
+cd ./website
+./run.sh
+```
+
+By default the website runner now binds to `0.0.0.0:8080`, so other machines on the same network can reach it through:
+
+```bash
+http://<your-machine-ip>:8080
+```
+
+## Data Locations
+
+By default, CryptEX stores chain and wallet data in system application-data locations:
+
+- macOS: `~/Library/Application Support/CryptEX`
+- Linux: `$XDG_DATA_HOME/CryptEX` or `~/.local/share/CryptEX`
+- Windows: `%APPDATA%\\CryptEX`
+
+## Documentation
+
+- Whitepaper PDF: [WHITEPAPER.pdf](./WHITEPAPER.pdf)
+- Whitepaper source: [archives/CryptEX_Whitepaper_Source_April_2026.md](./archives/CryptEX_Whitepaper_Source_April_2026.md)
+- Release notes: [RELEASE_NOTES.md](./RELEASE_NOTES.md)
+- PoW rules: [docs/pow.md](./docs/pow.md)
+- Communication systems: [docs/communication-systems.md](./docs/communication-systems.md)
