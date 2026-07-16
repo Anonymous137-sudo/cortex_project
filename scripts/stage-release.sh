@@ -42,8 +42,9 @@ copy_if_exists() {
   fi
 }
 
-# School distribution flow: publish only the Windows runtime bundle.
+# School distribution flow: publish the Windows runtime bundle and the macOS test bundle.
 copy_if_exists "${DIST_DIR}/CryptEX_windows_x86_64_bundle.zip"
+copy_if_exists "${DIST_DIR}/CryptEX_macos_arm64_bundle.zip"
 
 (
   cd "${OUT_DIR}"

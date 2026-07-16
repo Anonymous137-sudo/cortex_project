@@ -79,8 +79,10 @@ build_macos_arm64() {
   cp "${build_dir}/cryptex_powminer_osx" "${DIST_DIR}/cryptex_powminer_macos_arm64"
   if [[ -d "${build_dir}/cryptexqt_osx.app" ]]; then
     rm -f "${build_dir}/cryptexqt_osx" "${DIST_DIR}/cryptexqt_macos_arm64"
-    copy_bundle_if_exists "${build_dir}/cryptexqt_osx.app" "${DIST_DIR}/cryptexqt_macos_arm64.app" || true
-    zip_bundle_if_exists "${build_dir}/cryptexqt_osx.app" "${DIST_DIR}/CryptEX_macos_arm64_bundle.zip" || true
+    "${ROOT_DIR}/scripts/package-macos-bundle.sh" \
+      "${build_dir}" \
+      "${DIST_DIR}/cryptexqt_macos_arm64.app" \
+      "${DIST_DIR}/CryptEX_macos_arm64_bundle.zip" >/dev/null
   else
     copy_if_exists "${build_dir}/cryptexqt_osx" "${DIST_DIR}/cryptexqt_macos_arm64" || true
   fi
@@ -104,8 +106,10 @@ build_macos_universal() {
   cp "${build_dir}/cryptex_powminer_osx" "${DIST_DIR}/cryptex_powminer_macos_universal"
   if [[ -d "${build_dir}/cryptexqt_osx.app" ]]; then
     rm -f "${build_dir}/cryptexqt_osx" "${DIST_DIR}/cryptexqt_macos_universal"
-    copy_bundle_if_exists "${build_dir}/cryptexqt_osx.app" "${DIST_DIR}/cryptexqt_macos_universal.app" || true
-    zip_bundle_if_exists "${build_dir}/cryptexqt_osx.app" "${DIST_DIR}/CryptEX_macos_universal_bundle.zip" || true
+    "${ROOT_DIR}/scripts/package-macos-bundle.sh" \
+      "${build_dir}" \
+      "${DIST_DIR}/cryptexqt_macos_universal.app" \
+      "${DIST_DIR}/CryptEX_macos_universal_bundle.zip" >/dev/null
   else
     copy_if_exists "${build_dir}/cryptexqt_osx" "${DIST_DIR}/cryptexqt_macos_universal" || true
   fi
