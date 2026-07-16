@@ -26,10 +26,26 @@ detect_mingw_bin() {
     "$(command -v x86_64-w64-mingw32-g++ 2>/dev/null || true)" \
     "$(command -v x86_64-w64-mingw32-g++-posix 2>/dev/null || true)" \
     "$(command -v x86_64-w64-mingw32-gcc 2>/dev/null || true)" \
-    "$(command -v x86_64-w64-mingw32-gcc-posix 2>/dev/null || true)"; do
+    "$(command -v x86_64-w64-mingw32-gcc-posix 2>/dev/null || true)" \
+    "$(command -v x86_64-w64-mingw32-objdump 2>/dev/null || true)"; do
     if [[ -n "${candidate}" ]]; then
-      dirname "${candidate}"
-      return 0
+      local resolved candidate_dir sibling_dir
+      resolved="$(python3 - <<'PY' "${candidate}"
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+      candidate_dir="$(dirname "${resolved}")"
+      sibling_dir="$(cd "${candidate_dir}/../x86_64-w64-mingw32/bin" 2>/dev/null && pwd || true)"
+
+      if [[ -f "${candidate_dir}/libwinpthread-1.dll" ]]; then
+        printf '%s\n' "${candidate_dir}"
+        return 0
+      fi
+      if [[ -n "${sibling_dir}" && -f "${sibling_dir}/libwinpthread-1.dll" ]]; then
+        printf '%s\n' "${sibling_dir}"
+        return 0
+      fi
     fi
   done
   return 1
@@ -81,6 +97,22 @@ find_dep_file() {
     fi
   done
   return 1
+}
+
+copy_preferred_runtime_dlls() {
+  [[ -n "${MINGW_BIN}" && -d "${MINGW_BIN}" ]] || return 0
+
+  local runtime_dll
+  for runtime_dll in \
+    libgcc_s_seh-1.dll \
+    libstdc++-6.dll \
+    libwinpthread-1.dll \
+    libssp-0.dll \
+    libatomic-1.dll; do
+    if [[ -f "${MINGW_BIN}/${runtime_dll}" ]]; then
+      copy_pe_file "${MINGW_BIN}/${runtime_dll}" "${OUT_DIR}/${runtime_dll}"
+    fi
+  done
 }
 
 copy_pe_file() {
@@ -173,6 +205,71 @@ verify_bundle_dependencies() {
   rm -f "${tmp}"
 }
 
+bundle_imports_symbol() {
+  local pe="$1"
+  local dll_name="$2"
+  local symbol="$3"
+  x86_64-w64-mingw32-objdump -p "${pe}" | awk -v want_dll="${dll_name,,}" -v want_symbol="${symbol}" '
+    /DLL Name:/ {
+      dll = tolower($3);
+      next;
+    }
+    dll == want_dll && $0 ~ /^[[:space:]]+[0-9a-f]/ {
+      name = $NF;
+      if (name == want_symbol) {
+        found = 1;
+        exit 0;
+      }
+    }
+    END {
+      exit found ? 0 : 1;
+    }
+  '
+}
+
+bundle_exports_symbol() {
+  local dll="$1"
+  local symbol="$2"
+  x86_64-w64-mingw32-objdump -p "${dll}" | awk -v want_symbol="${symbol}" '
+    /\[Ordinal\/Name Pointer\] Table/ {
+      in_table = 1;
+      next;
+    }
+    in_table && $0 ~ /^[[:space:]]*\[[[:space:][:digit:]]+\]/ {
+      if ($NF == want_symbol) {
+        found = 1;
+        exit 0;
+      }
+      next;
+    }
+    in_table && $0 !~ /^[[:space:]]*\[[[:space:][:digit:]]+\]/ {
+      exit found ? 0 : 1;
+    }
+    END {
+      exit found ? 0 : 1;
+    }
+  '
+}
+
+verify_bundle_symbol_exports() {
+  local bundle_root="$1"
+  local winpthread="${bundle_root}/libwinpthread-1.dll"
+  [[ -f "${winpthread}" ]] || return 0
+
+  local needs_time64=0
+  while IFS= read -r pe; do
+    if bundle_imports_symbol "${pe}" "libwinpthread-1.dll" "pthread_cond_timedwait64"; then
+      needs_time64=1
+      break
+    fi
+  done < <(find "${bundle_root}" -type f \( -iname '*.exe' -o -iname '*.dll' \) | sort)
+
+  if [[ ${needs_time64} -eq 1 ]] && ! bundle_exports_symbol "${winpthread}" "pthread_cond_timedwait64"; then
+    echo "[package-win] bundled libwinpthread-1.dll does not export pthread_cond_timedwait64" >&2
+    exit 1
+  fi
+}
+
 copy_required "${BUILD_DIR}/cryptexqt_win32.exe" "${OUT_DIR}/cryptexqt_win32.exe"
 copy_required "${BUILD_DIR}/cryptexd_win32.exe" "${OUT_DIR}/cryptexd_win32.exe"
 copy_required "${BUILD_DIR}/cryptex_tests.exe" "${OUT_DIR}/cryptex_tests.exe"
@@ -182,6 +279,8 @@ COPIED_DLLS["cryptexqt_win32.exe"]=1
 COPIED_DLLS["cryptexd_win32.exe"]=1
 COPIED_DLLS["cryptex_tests.exe"]=1
 COPIED_DLLS["cryptex_powminer_win32.exe"]=1
+
+copy_preferred_runtime_dlls
 
 resolve_and_copy_deps "${OUT_DIR}/cryptexqt_win32.exe" "${OUT_DIR}"
 resolve_and_copy_deps "${OUT_DIR}/cryptexd_win32.exe" "${OUT_DIR}"
@@ -242,6 +341,7 @@ copy_required "${ROOT_DIR}/docs/CORTEX_AI_ARCHITECTURE_PLAN.md" "${OUT_DIR}/docs
 copy_required "${ROOT_DIR}/docs/communication-systems.md" "${OUT_DIR}/docs/communication-systems.md"
 
 verify_bundle_dependencies "${OUT_DIR}"
+verify_bundle_symbol_exports "${OUT_DIR}"
 
 (
   cd "$(dirname "${OUT_DIR}")"
