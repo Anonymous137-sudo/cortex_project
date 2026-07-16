@@ -51,7 +51,43 @@ PY
   return 1
 }
 
+mingw_runtime_search_dirs() {
+  [[ -n "${MINGW_BIN}" && -d "${MINGW_BIN}" ]] || return 0
+
+  local runtime_dir
+  for runtime_dir in \
+    "${MINGW_BIN}" \
+    "$(cd "${MINGW_BIN}/.." 2>/dev/null && pwd || true)" \
+    "$(cd "${MINGW_BIN}/../lib" 2>/dev/null && pwd || true)" \
+    "$(cd "${MINGW_BIN}/../x86_64-w64-mingw32/bin" 2>/dev/null && pwd || true)" \
+    "$(cd "${MINGW_BIN}/../x86_64-w64-mingw32/lib" 2>/dev/null && pwd || true)"; do
+    if [[ -n "${runtime_dir}" && -d "${runtime_dir}" ]]; then
+      printf '%s\n' "${runtime_dir}"
+    fi
+  done
+}
+
 MINGW_BIN="${MINGW_W64_BIN_WIN_X86_64:-$(detect_mingw_bin || true)}"
+
+find_mingw_runtime_file() {
+  local dll_name="$1"
+  local dir
+
+  if [[ -n "${MINGW_W64_RUNTIME_WIN_X86_64:-}" && -f "${MINGW_W64_RUNTIME_WIN_X86_64}/${dll_name}" ]]; then
+    printf '%s\n' "${MINGW_W64_RUNTIME_WIN_X86_64}/${dll_name}"
+    return 0
+  fi
+
+  while IFS= read -r dir; do
+    [[ -n "${dir}" ]] || continue
+    if [[ -f "${dir}/${dll_name}" ]]; then
+      printf '%s\n' "${dir}/${dll_name}"
+      return 0
+    fi
+  done < <(mingw_runtime_search_dirs)
+
+  return 1
+}
 
 if [[ ! -d "${BUILD_DIR}" ]]; then
   echo "[package-win] build directory not found: ${BUILD_DIR}" >&2
@@ -100,17 +136,17 @@ find_dep_file() {
 }
 
 copy_preferred_runtime_dlls() {
-  [[ -n "${MINGW_BIN}" && -d "${MINGW_BIN}" ]] || return 0
-
   local runtime_dll
+  local runtime_src
   for runtime_dll in \
     libgcc_s_seh-1.dll \
     libstdc++-6.dll \
     libwinpthread-1.dll \
     libssp-0.dll \
     libatomic-1.dll; do
-    if [[ -f "${MINGW_BIN}/${runtime_dll}" ]]; then
-      copy_pe_file "${MINGW_BIN}/${runtime_dll}" "${OUT_DIR}/${runtime_dll}"
+    runtime_src="$(find_mingw_runtime_file "${runtime_dll}" || true)"
+    if [[ -n "${runtime_src}" ]]; then
+      copy_pe_file "${runtime_src}" "${OUT_DIR}/${runtime_dll}"
     fi
   done
 }
@@ -254,19 +290,34 @@ bundle_exports_symbol() {
 verify_bundle_symbol_exports() {
   local bundle_root="$1"
   local winpthread="${bundle_root}/libwinpthread-1.dll"
+  local libstdcpp="${bundle_root}/libstdc++-6.dll"
   [[ -f "${winpthread}" ]] || return 0
 
   local needs_time64=0
+  local needs_codecvt_mbstate=0
   while IFS= read -r pe; do
     if bundle_imports_symbol "${pe}" "libwinpthread-1.dll" "pthread_cond_timedwait64"; then
       needs_time64=1
-      break
+    fi
+    if bundle_imports_symbol "${pe}" "libstdc++-6.dll" "_ZNKSt25__codecvt_utf8_utf16_baseIwE10do_unshiftER9_MbstatetPcS3_RS3_"; then
+      needs_codecvt_mbstate=1
     fi
   done < <(find "${bundle_root}" -type f \( -iname '*.exe' -o -iname '*.dll' \) | sort)
 
   if [[ ${needs_time64} -eq 1 ]] && ! bundle_exports_symbol "${winpthread}" "pthread_cond_timedwait64"; then
     echo "[package-win] bundled libwinpthread-1.dll does not export pthread_cond_timedwait64" >&2
     exit 1
+  fi
+
+  if [[ ${needs_codecvt_mbstate} -eq 1 ]]; then
+    [[ -f "${libstdcpp}" ]] || {
+      echo "[package-win] bundled libstdc++-6.dll is missing" >&2
+      exit 1
+    }
+    if ! bundle_exports_symbol "${libstdcpp}" "_ZNKSt25__codecvt_utf8_utf16_baseIwE10do_unshiftER9_MbstatetPcS3_RS3_"; then
+      echo "[package-win] bundled libstdc++-6.dll does not export the required codecvt mbstate symbol" >&2
+      exit 1
+    fi
   fi
 }
 
