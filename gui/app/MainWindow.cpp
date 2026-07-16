@@ -63,6 +63,18 @@
 
 namespace {
 
+QString settingsOrganizationName() {
+    return QStringLiteral("CortexProject");
+}
+
+QString settingsApplicationName() {
+    return QStringLiteral("CortexQt");
+}
+
+QString applicationDataRootName() {
+    return QStringLiteral("CortexProject");
+}
+
 QString normalizeConfigKey(QString key) {
     key = key.trimmed().toLower();
     key.replace('.', '_');
@@ -220,15 +232,34 @@ bool isAddressInUseError(const QString& line) {
            line.contains(QStringLiteral("bind:"), Qt::CaseInsensitive);
 }
 
+bool isBenignBackendStartupWarning(const QString& line) {
+    const auto lowered = line.toLower();
+    return lowered.contains(QStringLiteral("public ip detect failed")) ||
+           lowered.contains(QStringLiteral("secure ip detect failed")) ||
+           lowered.contains(QStringLiteral("outbound connect failed")) ||
+           lowered.contains(QStringLiteral("resolved seed=")) ||
+           lowered.contains(QStringLiteral("discovered lan peer=")) ||
+           lowered.contains(QStringLiteral("lan discovery listening on udp")) ||
+           lowered.contains(QStringLiteral("rpc server listening on")) ||
+           lowered.contains(QStringLiteral("loaded configuration from"));
+}
+
 bool looksLikeBackendFailureLine(const QString& line) {
     const auto lowered = line.toLower();
-    return lowered.contains(QStringLiteral("failed")) ||
-           lowered.contains(QStringLiteral("error")) ||
-           lowered.contains(QStringLiteral("crash")) ||
+    if (isBenignBackendStartupWarning(line)) {
+        return false;
+    }
+    return lowered.contains(QStringLiteral("level=error")) ||
+           lowered.contains(QStringLiteral("level=fatal")) ||
+           lowered.contains(QStringLiteral("failed to start")) ||
+           lowered.contains(QStringLiteral("backend process crashed")) ||
+           lowered.contains(QStringLiteral("permission denied")) ||
+           lowered.contains(QStringLiteral("no such file or directory")) ||
+           lowered.contains(QStringLiteral("not found")) ||
+           lowered.contains(QStringLiteral("terminate called")) ||
+           lowered.contains(QStringLiteral("uncaught exception")) ||
            lowered.contains(QStringLiteral("fatal")) ||
-           lowered.contains(QStringLiteral("exception")) ||
-           lowered.contains(QStringLiteral("unable")) ||
-           lowered.contains(QStringLiteral("not found"));
+           lowered.contains(QStringLiteral("exception"));
 }
 
 } // namespace
@@ -1566,7 +1597,7 @@ QString MainWindow::defaultDataDirForNetwork(const QString& network) const {
     if (baseDir.isEmpty()) {
         baseDir = QDir::current().filePath(QStringLiteral("data"));
     } else {
-        baseDir = QDir(baseDir).filePath(QStringLiteral("CryptEX"));
+        baseDir = QDir(baseDir).filePath(applicationDataRootName());
     }
 
     if (network == QStringLiteral("testnet")) {
@@ -1632,7 +1663,9 @@ void MainWindow::applyAutomaticBackendDefaults() {
 
     const auto daemonGuess = guessedDaemonPath();
     const auto currentDaemon = daemonPathEdit_->text().trimmed();
-    if (currentDaemon.isEmpty() || (!autoDaemonPath_.isEmpty() && currentDaemon == autoDaemonPath_)) {
+    const bool currentDaemonMissing = !currentDaemon.isEmpty() && !QFileInfo::exists(currentDaemon);
+    if (currentDaemon.isEmpty() || currentDaemonMissing ||
+        (!autoDaemonPath_.isEmpty() && currentDaemon == autoDaemonPath_)) {
         daemonPathEdit_->setText(daemonGuess);
     }
     autoDaemonPath_ = daemonGuess;
@@ -2016,11 +2049,16 @@ void MainWindow::deleteWalletSession() {
 }
 
 void MainWindow::loadSettings() {
-    QSettings settings(QStringLiteral("CryptEX"), QStringLiteral("CryptEXQt"));
+    QSettings settings(settingsOrganizationName(), settingsApplicationName());
     rpcUrlEdit_->setText(settings.value(QStringLiteral("rpc/url"), rpcUrlEdit_->text()).toString());
     rpcUserEdit_->setText(settings.value(QStringLiteral("rpc/user"), rpcUserEdit_->text()).toString());
     rpcPasswordEdit_->setText(settings.value(QStringLiteral("rpc/password"), rpcPasswordEdit_->text()).toString());
-    daemonPathEdit_->setText(settings.value(QStringLiteral("backend/executable"), daemonPathEdit_->text()).toString());
+    const auto savedDaemonPath = settings.value(QStringLiteral("backend/executable")).toString().trimmed();
+    if (!savedDaemonPath.isEmpty() && QFileInfo::exists(savedDaemonPath)) {
+        daemonPathEdit_->setText(savedDaemonPath);
+    } else {
+        daemonPathEdit_->clear();
+    }
     dataDirEdit_->setText(settings.value(QStringLiteral("backend/datadir")).toString());
     const auto walletFormat = settings.value(QStringLiteral("wallet/format"), QStringLiteral("base64")).toString();
     const auto walletFormatIndex = walletFormatCombo_->findData(walletFormat);
@@ -2048,7 +2086,7 @@ void MainWindow::loadSettings() {
 }
 
 void MainWindow::saveSettings() {
-    QSettings settings(QStringLiteral("CryptEX"), QStringLiteral("CryptEXQt"));
+    QSettings settings(settingsOrganizationName(), settingsApplicationName());
     settings.setValue(QStringLiteral("rpc/url"), rpcUrlEdit_->text().trimmed());
     settings.setValue(QStringLiteral("rpc/user"), rpcUserEdit_->text().trimmed());
     settings.setValue(QStringLiteral("rpc/password"), rpcPasswordEdit_->text());
@@ -2581,7 +2619,18 @@ void MainWindow::startBackend() {
 
 void MainWindow::launchBackendProcess() {
     DaemonController::LaunchConfig config;
-    config.executablePath = daemonPathEdit_->text().trimmed().isEmpty() ? guessedDaemonPath() : daemonPathEdit_->text().trimmed();
+    const auto requestedDaemonPath = daemonPathEdit_->text().trimmed();
+    config.executablePath = (!requestedDaemonPath.isEmpty() && QFileInfo::exists(requestedDaemonPath))
+        ? requestedDaemonPath
+        : guessedDaemonPath();
+    if (config.executablePath != requestedDaemonPath) {
+        daemonPathEdit_->setText(config.executablePath);
+        if (!requestedDaemonPath.isEmpty()) {
+            systemLogView_->appendPlainText(
+                QStringLiteral("[gui] Saved backend path was missing; falling back to bundled daemon: %1")
+                    .arg(config.executablePath));
+        }
+    }
     config.network = networkCombo_->currentText();
     config.dataDir = dataDirEdit_->text().trimmed().isEmpty()
         ? defaultDataDirForNetwork(config.network)

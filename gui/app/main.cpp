@@ -78,8 +78,8 @@ private:
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("CryptEX Qt"));
-    app.setOrganizationName(QStringLiteral("CryptEX"));
+    app.setApplicationName(QStringLiteral("Cortex Qt"));
+    app.setOrganizationName(QStringLiteral("CortexProject"));
     app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     app.setWindowIcon(QIcon(QStringLiteral(":/branding/CryptEXlogo.jpeg")));
 

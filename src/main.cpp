@@ -256,14 +256,14 @@ static std::vector<std::filesystem::path> legacy_wallet_candidates_from_binary(c
 
 static std::filesystem::path system_default_data_dir() {
 #ifdef _WIN32
-    if (auto home = home_directory()) return *home / "CryptEX";
+    if (auto home = home_directory()) return *home / "CortexProject";
 #elif defined(__APPLE__)
-    if (auto home = home_directory()) return *home / "Library/Application Support/CryptEX";
+    if (auto home = home_directory()) return *home / "Library/Application Support/CortexProject";
 #else
     if (const char* xdg = std::getenv("XDG_DATA_HOME")) {
-        return std::filesystem::path(xdg) / "CryptEX";
+        return std::filesystem::path(xdg) / "CortexProject";
     }
-    if (auto home = home_directory()) return *home / ".local/share/CryptEX";
+    if (auto home = home_directory()) return *home / ".local/share/CortexProject";
 #endif
     return std::filesystem::current_path() / "data";
 }
