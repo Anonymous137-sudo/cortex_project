@@ -20,7 +20,7 @@ public:
         setWindowFlags(Qt::Dialog | Qt::CustomizeWindowHint | Qt::WindowTitleHint);
         setModal(false);
         setFixedSize(360, 170);
-        setWindowTitle(QStringLiteral("CryptEX Core"));
+        setWindowTitle(QStringLiteral("Cortex Project"));
 
         auto* root = new QHBoxLayout(this);
         root->setContentsMargins(0, 0, 0, 0);
@@ -43,11 +43,11 @@ public:
         content->setStyleSheet(QStringLiteral("background:#f7f7f7;"));
         auto* contentLayout = new QVBoxLayout(content);
         contentLayout->setContentsMargins(18, 20, 18, 16);
-        auto* title = new QLabel(QStringLiteral("CryptEX Core"), content);
+        auto* title = new QLabel(QStringLiteral("Cortex Project"), content);
         title->setStyleSheet(QStringLiteral("color:#4b4b4b; font-size:22px; font-weight:500;"));
-        auto* version = new QLabel(QStringLiteral("Version v0.6.3"), content);
+        auto* version = new QLabel(QStringLiteral("Version v0.1.2"), content);
         version->setStyleSheet(QStringLiteral("color:#666666; font-size:12px;"));
-        auto* copyright = new QLabel(QStringLiteral("© 2026 The CryptEX Core developers"), content);
+        auto* copyright = new QLabel(QStringLiteral("© 2026 Cortex Project school build"), content);
         copyright->setStyleSheet(QStringLiteral("color:#666666; font-size:11px;"));
         statusLabel_ = new QLabel(QStringLiteral("Loading block index..."), content);
         statusLabel_->setStyleSheet(QStringLiteral("color:#555555; font-size:12px;"));

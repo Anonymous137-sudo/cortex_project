@@ -39,6 +39,7 @@
 #include <ctime>
 #include <iomanip>
 #include <iostream>
+#include <string>
 #include <thread>
 #ifdef _WIN32
 #include <process.h>
@@ -54,6 +55,31 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace ssl = boost::asio::ssl;
 using tcp = boost::asio::ip::tcp;
+
+using TestFn = void (*)();
+
+bool test_name_matches_filter(const char* name) {
+    const char* filter = std::getenv("CRYPTEX_TEST_FILTER");
+    if (filter == nullptr || *filter == '\0') return true;
+    return std::string(name).find(filter) != std::string::npos;
+}
+
+bool test_trace_enabled() {
+    const char* raw = std::getenv("CRYPTEX_TEST_TRACE");
+    if (raw == nullptr) return false;
+    const std::string value(raw);
+    return value == "1" || value == "true" || value == "TRUE" || value == "yes" || value == "YES";
+}
+
+void run_named_test(const char* name, TestFn fn) {
+    if (!test_name_matches_filter(name)) return;
+    if (test_trace_enabled()) {
+        std::cerr << "[test] " << name << '\n';
+    }
+    fn();
+}
+
+#define RUN_TEST(fn) run_named_test(#fn, fn)
 
 struct NetworkScope {
     NetworkKind previous;
@@ -751,17 +777,15 @@ static void test_blockchain_repairs_invalid_active_tail_on_load() {
 }
 
 static void test_blockchain_repairs_missing_block_active_tail_on_load() {
-    NetworkScope scope(NetworkKind::Mainnet);
+    NetworkScope scope(NetworkKind::Regtest);
     std::filesystem::path tmp = unique_temp_path("cryptex_missing_block_tail_repair");
     remove_all_if_exists(tmp);
 
     Blockchain chain(tmp);
     auto miner = make_test_key();
     for (int i = 0; i < 3; ++i) {
-        auto blk = make_test_block(chain,
-                                   miner.address,
-                                   genesis_timestamp() + 60 + static_cast<uint32_t>(i * 60));
-        assert(chain.accept_block(blk, /*skip_pow_check=*/true));
+        auto blk = mine_valid_block(chain, miner.address);
+        assert(chain.accept_block(blk));
     }
 
     auto missing = chain.get_block(2);
@@ -2703,6 +2727,93 @@ static void test_late_node_syncs_to_best_chain() {
     remove_all_if_exists(sink_dir);
 }
 
+static void test_equal_height_fork_resolves_after_next_block() {
+    NetworkScope scope(NetworkKind::Regtest);
+    auto source_dir = unique_temp_path("cryptex_equal_height_source");
+    auto sink_dir = unique_temp_path("cryptex_equal_height_sink");
+    remove_all_if_exists(source_dir);
+    remove_all_if_exists(sink_dir);
+
+    auto source_wallet = Wallet::create_new("sourcepass", (source_dir / "Wallet.dat").string());
+    auto sink_wallet = Wallet::create_new("sinkpass", (sink_dir / "Wallet.dat").string());
+
+    Blockchain source_chain(source_dir);
+    Blockchain sink_chain(sink_dir);
+
+    auto source_tip1 = mine_valid_block(source_chain, source_wallet.address);
+    assert(source_chain.accept_block(source_tip1));
+    auto sink_tip1 = mine_valid_block(sink_chain, sink_wallet.address);
+    assert(sink_chain.accept_block(sink_tip1));
+
+    assert(source_chain.best_height() == 1);
+    assert(sink_chain.best_height() == 1);
+    assert(source_chain.tip_hash() != sink_chain.tip_hash());
+
+    boost::asio::io_context source_ctx;
+    boost::asio::io_context sink_ctx;
+    uint16_t source_port = pick_free_port();
+
+    net::NetworkNode source_node(source_ctx, source_port, source_dir);
+    source_node.attach_blockchain(&source_chain);
+    source_node.best_height = static_cast<uint32_t>(source_chain.best_height());
+    source_node.start();
+
+    net::NetworkNode sink_node(sink_ctx, 0, sink_dir);
+    sink_node.attach_blockchain(&sink_chain);
+    sink_node.best_height = static_cast<uint32_t>(sink_chain.best_height());
+    sink_node.start();
+
+    std::thread source_thread([&]() { source_ctx.run(); });
+    std::thread sink_thread([&]() { sink_ctx.run(); });
+
+    sink_node.connect("127.0.0.1", source_port);
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline &&
+           !sink_chain.get_block_by_hash(source_tip1.header.pow_hash()).has_value()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    assert(sink_chain.get_block_by_hash(source_tip1.header.pow_hash()).has_value());
+    assert(sink_chain.best_height() == 1);
+
+    auto source_tip2 = mine_valid_block(source_chain, source_wallet.address);
+    assert(source_chain.accept_block(source_tip2));
+    source_node.best_height = static_cast<uint32_t>(source_chain.best_height());
+
+    net::Message inv;
+    inv.type = net::MessageType::INV;
+    serialization::write_varint(inv.payload, 1);
+    inv.payload.push_back(1);
+    auto block_hash_bytes = source_tip2.header.pow_hash().to_padded_bytes(constants::POW_HASH_BYTES);
+    inv.payload.insert(inv.payload.end(), block_hash_bytes.begin(), block_hash_bytes.end());
+    source_node.broadcast(inv);
+
+    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline &&
+           sink_chain.tip_hash() != source_tip2.header.pow_hash()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    auto status = sink_node.sync_status();
+    assert(sink_chain.best_height() == 2);
+    assert(sink_chain.tip_hash() == source_tip2.header.pow_hash());
+    assert(status.local_height == 2);
+    assert(status.best_peer_height >= 2);
+    assert(status.queued_blocks == 0);
+    assert(status.inflight_blocks == 0);
+
+    sink_node.stop();
+    source_node.stop();
+    sink_ctx.stop();
+    source_ctx.stop();
+    if (sink_thread.joinable()) sink_thread.join();
+    if (source_thread.joinable()) source_thread.join();
+
+    remove_all_if_exists(source_dir);
+    remove_all_if_exists(sink_dir);
+}
+
 static void test_deep_reorg_policy_blocks_history_rewrite() {
     NetworkScope scope(NetworkKind::Regtest);
     auto key = make_test_key();
@@ -3038,68 +3149,69 @@ int main() {
     quiet_logs.console = false;
     configure_logging(quiet_logs);
 
-    test_intelligence_policy_blocks_consensus_mutation();
-    test_intelligence_sidecar_protocol_roundtrip();
-    test_intelligence_bus_prefers_local_provider_when_available();
-    test_intelligence_bus_blocks_sensitive_remote_export_by_default();
-    test_intelligence_config_parse();
-    test_snapshot_collector_and_rules_provider();
-    test_intelligence_service_registers_rules_provider();
+    RUN_TEST(test_intelligence_policy_blocks_consensus_mutation);
+    RUN_TEST(test_intelligence_sidecar_protocol_roundtrip);
+    RUN_TEST(test_intelligence_bus_prefers_local_provider_when_available);
+    RUN_TEST(test_intelligence_bus_blocks_sensitive_remote_export_by_default);
+    RUN_TEST(test_intelligence_config_parse);
+    RUN_TEST(test_snapshot_collector_and_rules_provider);
+    RUN_TEST(test_intelligence_service_registers_rules_provider);
     if (std::getenv("CRYPTEX_SMOKE_AI_ONLY")) {
         std::cout << "AI smoke tests passed\n";
         return 0;
     }
 
-    test_base64_address();
-    test_multi_format_address_support();
-    test_bip39_known_vector();
-    test_config_parse();
-    test_version_payload_and_seed_bootstrap();
-    test_structured_logging_to_file();
-    test_genesis_pow_full_512();
-    test_compact_target_canonical_rules();
-    test_reward_schedule_matches_new_consensus();
-    test_network_modes();
-    test_secure_chat_roundtrip();
-    test_secure_chat_kdf_profiles();
-    test_legacy_address_compatibility();
-    test_mainnet_emergency_difficulty_allows_low_hash_takeover();
-    test_mainnet_emergency_difficulty_recovers_without_oscillation();
-    test_future_timestamp_block_is_rejected();
-    test_invalid_compact_target_bits_are_rejected();
-    test_rejected_candidate_does_not_become_processed();
-    test_blockchain_repairs_invalid_active_tail_on_load();
-    test_blockchain_repairs_missing_block_active_tail_on_load();
-    test_unique_coinbase_rewards_accumulate();
-    test_sighash_and_signature();
-    test_utxo_apply_and_fee();
-    test_wallet_multi_address();
-    test_wallet_mnemonic_import_roundtrip();
-    test_wallet_kdf_roundtrip_and_rotation();
-    test_wallet_balance_summary();
-    test_coinbase_matures_on_100th_confirmation_boundary();
-    test_wallet_rescan_discovers_used_hd_address();
-    test_wallet_unused_pool_and_privacy_change();
-    test_chainstate_snapshot_reload();
-    test_wallet_balance_locks_when_chain_unapproved();
-    test_offline_tip_extension_after_network_approval_stays_approved();
-    test_sync_approval_peerless_attach_reapproves_local_chain();
-    test_fresh_genesis_node_is_not_auto_approved();
-    test_blockchain_restores_missing_height_files_from_hash_index();
-    test_mempool_policy_rejections();
-    test_mempool_orphan_promotion();
-    test_mempool_mineable_transactions_filter_invalid_entries();
-    test_peer_state_persistence();
-    test_block_locator_and_header_slice();
-    test_voice_call_content_roundtrip();
-    test_late_node_syncs_to_best_chain();
-    test_deep_reorg_policy_blocks_history_rewrite();
-    test_shallow_reorg_within_limit_is_allowed();
-    test_local_checkpoint_persists_and_blocks_deep_rewrite();
-    test_stale_checkpoint_above_tip_is_cleared_on_startup();
-    test_wallet_session_rpc_independent_of_startup_wallet_flags();
-    test_rpc_service();
-    test_rpc_tls_autogenerates_certificate_and_serves_https();
+    RUN_TEST(test_base64_address);
+    RUN_TEST(test_multi_format_address_support);
+    RUN_TEST(test_bip39_known_vector);
+    RUN_TEST(test_config_parse);
+    RUN_TEST(test_version_payload_and_seed_bootstrap);
+    RUN_TEST(test_structured_logging_to_file);
+    RUN_TEST(test_genesis_pow_full_512);
+    RUN_TEST(test_compact_target_canonical_rules);
+    RUN_TEST(test_reward_schedule_matches_new_consensus);
+    RUN_TEST(test_network_modes);
+    RUN_TEST(test_secure_chat_roundtrip);
+    RUN_TEST(test_secure_chat_kdf_profiles);
+    RUN_TEST(test_legacy_address_compatibility);
+    RUN_TEST(test_mainnet_emergency_difficulty_allows_low_hash_takeover);
+    RUN_TEST(test_mainnet_emergency_difficulty_recovers_without_oscillation);
+    RUN_TEST(test_future_timestamp_block_is_rejected);
+    RUN_TEST(test_invalid_compact_target_bits_are_rejected);
+    RUN_TEST(test_rejected_candidate_does_not_become_processed);
+    RUN_TEST(test_blockchain_repairs_invalid_active_tail_on_load);
+    RUN_TEST(test_blockchain_repairs_missing_block_active_tail_on_load);
+    RUN_TEST(test_unique_coinbase_rewards_accumulate);
+    RUN_TEST(test_sighash_and_signature);
+    RUN_TEST(test_utxo_apply_and_fee);
+    RUN_TEST(test_wallet_multi_address);
+    RUN_TEST(test_wallet_mnemonic_import_roundtrip);
+    RUN_TEST(test_wallet_kdf_roundtrip_and_rotation);
+    RUN_TEST(test_wallet_balance_summary);
+    RUN_TEST(test_coinbase_matures_on_100th_confirmation_boundary);
+    RUN_TEST(test_wallet_rescan_discovers_used_hd_address);
+    RUN_TEST(test_wallet_unused_pool_and_privacy_change);
+    RUN_TEST(test_chainstate_snapshot_reload);
+    RUN_TEST(test_wallet_balance_locks_when_chain_unapproved);
+    RUN_TEST(test_offline_tip_extension_after_network_approval_stays_approved);
+    RUN_TEST(test_sync_approval_peerless_attach_reapproves_local_chain);
+    RUN_TEST(test_fresh_genesis_node_is_not_auto_approved);
+    RUN_TEST(test_blockchain_restores_missing_height_files_from_hash_index);
+    RUN_TEST(test_mempool_policy_rejections);
+    RUN_TEST(test_mempool_orphan_promotion);
+    RUN_TEST(test_mempool_mineable_transactions_filter_invalid_entries);
+    RUN_TEST(test_peer_state_persistence);
+    RUN_TEST(test_block_locator_and_header_slice);
+    RUN_TEST(test_voice_call_content_roundtrip);
+    RUN_TEST(test_late_node_syncs_to_best_chain);
+    RUN_TEST(test_equal_height_fork_resolves_after_next_block);
+    RUN_TEST(test_deep_reorg_policy_blocks_history_rewrite);
+    RUN_TEST(test_shallow_reorg_within_limit_is_allowed);
+    RUN_TEST(test_local_checkpoint_persists_and_blocks_deep_rewrite);
+    RUN_TEST(test_stale_checkpoint_above_tip_is_cleared_on_startup);
+    RUN_TEST(test_wallet_session_rpc_independent_of_startup_wallet_flags);
+    RUN_TEST(test_rpc_service);
+    RUN_TEST(test_rpc_tls_autogenerates_certificate_and_serves_https);
     // Block reward enforcement: overpay coinbase should fail, correct should pass
     {
         std::filesystem::path tmp = unique_temp_path("cryptex_test_chain");

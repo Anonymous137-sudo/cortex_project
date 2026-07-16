@@ -3374,7 +3374,7 @@ Message NetworkNode::build_version_message() const {
     ver.type = MessageType::VERSION;
     VersionPayload payload;
     payload.protocol_version = constants::PROTOCOL_VERSION;
-    payload.best_height = best_height;
+    payload.best_height = chain_ ? static_cast<uint32_t>(chain_->best_height()) : best_height;
     payload.listen_port = listen_port_ ? listen_port_ : default_p2p_port();
     if (advertised_self_) {
         payload.advertised_ip = advertised_self_->ip;
@@ -3386,6 +3386,23 @@ Message NetworkNode::build_version_message() const {
 void NetworkNode::request_headers_from(const std::shared_ptr<PeerSession>& peer) {
     if (!peer || !chain_) return;
     peer->send(build_getheaders_request());
+}
+
+void NetworkNode::note_peer_announced_height(const std::string& label, uint32_t height) {
+    {
+        std::lock_guard<std::mutex> guard(sync_mutex_);
+        auto& known_height = peer_heights_[label];
+        known_height = std::max(known_height, height);
+    }
+    {
+        std::lock_guard<std::mutex> guard(peer_state_mutex_);
+        auto& state = peer_states_[label];
+        const auto now = static_cast<int64_t>(std::time(nullptr));
+        if (state.netgroup.empty()) state.netgroup = peer_netgroup(label);
+        state.last_updated = now;
+        state.last_announced_height = std::max(state.last_announced_height, height);
+        if (state.source.empty()) state.source = "peer";
+    }
 }
 
 void NetworkNode::enqueue_block_download(const uint256_t& hash, const std::shared_ptr<PeerSession>& peer) {
@@ -3525,10 +3542,7 @@ void NetworkNode::register_default_handlers() {
                 record_peer_label(*advertised, "handshake");
                 peer->adopt_remote_label(*advertised);
             }
-            {
-                std::lock_guard<std::mutex> guard(sync_mutex_);
-                peer_heights_[peer->remote_label()] = version.best_height;
-            }
+            note_peer_announced_height(peer->remote_label(), version.best_height);
             {
                 std::lock_guard<std::mutex> guard(peer_state_mutex_);
                 auto& state = peer_states_[peer->remote_label()];
@@ -3543,7 +3557,7 @@ void NetworkNode::register_default_handlers() {
             }
             save_peer_state();
             update_chain_approval_state();
-            if (chain_ && version.best_height > chain_->best_height()) {
+            if (chain_) {
                 request_headers_from(peer);
             }
         } catch (...) {
@@ -3626,21 +3640,33 @@ void NetworkNode::register_default_handlers() {
         try {
             Block blk = Block::deserialize(ptr, rem);
             auto block_hash = blk.header.pow_hash();
+            const auto previous_height = chain_->best_height();
+            const auto previous_tip = chain_->tip_hash();
             bool ok = chain_->accept_block(blk);
             finish_block_download(block_hash);
             if (ok) {
                 best_height = chain_->best_height();
+                if (auto accepted_height = chain_->get_height_by_hash(block_hash)) {
+                    note_peer_announced_height(peer->remote_label(),
+                                               static_cast<uint32_t>(*accepted_height));
+                }
                 update_chain_approval_state();
-                // Broadcast inventory for the new block
-                Message inv;
-                inv.type = MessageType::INV;
-                std::vector<uint8_t> payload;
-                serialization::write_varint(payload, 1);
-                payload.push_back(1); // block type
-                auto hb = block_hash.to_padded_bytes(constants::POW_HASH_BYTES);
-                payload.insert(payload.end(), hb.begin(), hb.end());
-                inv.payload = payload;
-                broadcast(inv);
+                const bool tip_advanced =
+                    chain_->best_height() != previous_height ||
+                    chain_->tip_hash() != previous_tip;
+                if (tip_advanced) {
+                    Message inv;
+                    inv.type = MessageType::INV;
+                    std::vector<uint8_t> payload;
+                    serialization::write_varint(payload, 1);
+                    payload.push_back(1); // block type
+                    auto hb = block_hash.to_padded_bytes(constants::POW_HASH_BYTES);
+                    payload.insert(payload.end(), hb.begin(), hb.end());
+                    inv.payload = payload;
+                    broadcast(inv);
+                } else {
+                    request_headers_from(peer);
+                }
                 maybe_continue_sync(peer);
             } else {
                 update_chain_approval_state();
@@ -3697,6 +3723,8 @@ void NetworkNode::register_default_handlers() {
                 return;
             }
             uint256_t previous_link;
+            uint32_t inferred_remote_height = 0;
+            bool inferred_remote_height_set = false;
             for (uint64_t i = 0; i < count && rem > 0; ++i) {
                 auto hbytes = serialization::read_bytes(ptr, rem);
                 const uint8_t* hp = hbytes.data();
@@ -3709,15 +3737,28 @@ void NetworkNode::register_default_handlers() {
                         punish(peer, 10, "headers do not connect to known chain");
                         return;
                     }
+                    if (hdr.prev_block_hash == uint256_t()) {
+                        inferred_remote_height = 0;
+                    } else if (auto parent_height = chain_->get_height_by_hash(hdr.prev_block_hash)) {
+                        inferred_remote_height = static_cast<uint32_t>(*parent_height + 1);
+                    } else {
+                        inferred_remote_height = 0;
+                    }
+                    inferred_remote_height_set = true;
                 } else if (hdr.prev_block_hash != previous_link) {
                     punish(peer, 10, "header batch discontinuity");
                     return;
+                } else if (inferred_remote_height_set) {
+                    ++inferred_remote_height;
                 }
                 previous_link = hdr.hash();
 
                 if (!chain_->get_block_by_hash(canonical)) {
                     enqueue_block_download(canonical, peer);
                 }
+            }
+            if (count > 0 && inferred_remote_height_set) {
+                note_peer_announced_height(peer->remote_label(), inferred_remote_height);
             }
             pump_block_downloads();
             if (count == 0) {
@@ -4152,6 +4193,7 @@ void NetworkNode::register_default_handlers() {
                     ptr += constants::POW_HASH_BYTES;
                     rem -= constants::POW_HASH_BYTES;
                     if (!chain_->get_block_by_hash(h)) {
+                        request_headers_from(peer);
                         enqueue_block_download(h, peer);
                     }
                 } else if (inv_type == 2) { // tx

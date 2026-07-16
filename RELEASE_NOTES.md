@@ -1,58 +1,40 @@
-# CryptEX v0.6.3 Release Notes
+# Cortex Project v0.1.2 Release Notes
 
-Public contact: `Anon-Sec-BTCC@proton.me`
+These notes describe the `v0.1.2` school build dated July 16, 2026.
 
-These notes describe the CryptEX `v0.6.3` maintenance release as of April 2026. This release focuses on unifying the GUI and CLI mining paths so they operate on one backend chain state, while carrying forward the recent chain-repair, activation, and external-worker hardening work.
+This release focuses on two practical demo issues:
 
-## Highlights
+- cross-machine node convergence when two peers sit at the same height on different tips
+- desktop startup recovery when the saved backend executable path points to an old deleted build
 
-- Unified the GUI miner and CLI miner around the live backend RPC session instead of maintaining a separate `gui-miner` blockchain state
-- Added RPC-backed mining to `cryptexd mine`, using `getblocktemplate` plus `submitblock` as the single mining control path
-- Removed the GUI mined-block replay glue that existed only because of the old split datadir model
-- Kept the external SHA3-512 PoW worker architecture intact, including the dedicated ARM64 and x86_64 handwritten assembly workers
-- Carried forward the recent fixes for chain repair, activation-path integrity, stale-template rejection diagnostics, and bundled daemon/worker sync
+## What Changed
 
-## Unified Mining
+- Fixed equal-height fork recovery so peers now request headers and reconcile instead of idling on competing tips
+- Improved peer height tracking so sync state reflects remote progress more accurately during catch-up
+- Updated block handling so accepted side-branch blocks trigger follow-up header sync when the active tip did not actually advance
+- Added backend path recovery in the GUI so a stale saved path falls back to the bundled daemon automatically
+- Added focused regressions for equal-height fork resolution and missing-block active-tail repair
 
-- `cryptexd mine` now supports:
-  - `--rpc-url`
-  - `--rpcuser`
-  - `--rpcpassword`
-  - `--rpcallowselfsigned`
-  - `--rpccacert`
-- In RPC-backed mining mode, the miner no longer opens its own `Blockchain` instance
-- The miner now fetches candidate blocks from the running backend with `getblocktemplate`
-- Found blocks are submitted back through `submitblock` on the same backend that the GUI wallet and dashboard are already using
-- The GUI mining page now launches this RPC-backed path by default, using the active backend RPC settings from the desktop client
+## Why This Matters For The School Demo
 
-## Desktop Behavior Changes
+- A Windows machine and a macOS test machine running the same build are less likely to drift onto separate local tips during demo sync tests
+- The desktop app is more resilient after moving folders, rebuilding locally, or launching a packaged bundle after using an older development build
+- Validation is easier because the test harness now supports targeted test filtering
 
-- The GUI miner no longer defaults to a dedicated `gui-miner` subdirectory for blockchain state
-- The GUI no longer parses `MinedBlockHex` from miner stdout and resubmits it itself
-- The old pending mined-block reconciliation flow was removed from the GUI refresh cycle
-- Mining status text and hints in the GUI were updated to reflect the new single-backend model
+## Validation
 
-## Chain Integrity and Acceptance
+The release validation for this update focused on:
 
-- Preserved the recent active-chain repair behavior for stale and broken local tails
-- Preserved the safer activation-path handling so valid candidates are resolved before live active state is mutated
-- Preserved the hardened tip-candidate diagnostics used when a PoW worker result is rejected after validation
-- Preserved the macOS bundle refresh behavior so the Qt app launches the same daemon and worker binaries that were just rebuilt
+- equal-height fork resolution
+- late-node catch-up sync
+- missing-block tail repair
+- packaged desktop startup using bundled backend binaries
 
-## PoW Worker Notes
+## Release Assets
 
-- ARM64 macOS and Linux builds continue to use dedicated handwritten assembly workers
-- Linux x86_64 and Windows x86_64 continue to ship dedicated handwritten assembly workers with AVX2-focused nonce search
-- Consensus still remains entirely in the daemon; workers only search nonce ranges and return candidate results
+This school-facing repository still ships the Windows runtime bundle used by school lab systems, and may also include macOS test assets when they are rebuilt during release staging.
 
-## Packaging and Release Infrastructure
+## Upgrade Note
 
-- Updated release metadata to `v0.6.3` across the desktop app, docs, and packaging helpers
-- Rebuilt the release assets from the current source tree before tagging
-- Regenerated staged release artifacts and SHA-256 checksums for the GitHub release payload
-
-## Upgrade Guidance
-
-- Replace older app bundles with the `v0.6.3` binaries before starting the GUI miner
-- Existing legacy `gui-miner` folders from older runs are not auto-deleted, but new GUI mining sessions no longer rely on them
-- If you previously depended on standalone local-chain mining behavior, switch to backend-RPC mining so wallet, dashboard, node state, and mining all stay aligned
+- Replace older bundles with the `v0.1.2` assets before testing node-to-node sync
+- If a previous run saved a backend path to a deleted build folder, launch the new bundle once and let it rewrite the path automatically

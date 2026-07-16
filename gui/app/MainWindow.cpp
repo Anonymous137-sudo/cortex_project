@@ -262,6 +262,14 @@ bool looksLikeBackendFailureLine(const QString& line) {
            lowered.contains(QStringLiteral("exception"));
 }
 
+bool pathLooksLikeDevelopmentArtifact(const QString& path) {
+    const auto normalized = QDir::cleanPath(path).toLower();
+    return normalized.contains(QStringLiteral("/build-release/")) ||
+           normalized.contains(QStringLiteral("/build-debug/")) ||
+           normalized.contains(QStringLiteral("/cmake-build-")) ||
+           normalized.contains(QStringLiteral("/dist/"));
+}
+
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent)
@@ -493,9 +501,7 @@ void MainWindow::buildUi() {
 
     miningPage_->setBaseLaunchConfigProvider([this]() {
         MinerController::LaunchConfig config;
-        config.executablePath = daemonPathEdit_->text().trimmed().isEmpty()
-            ? guessedDaemonPath()
-            : daemonPathEdit_->text().trimmed();
+        config.executablePath = resolvedDaemonPath();
         config.network = networkCombo_->currentText();
         config.dataDir = dataDirEdit_->text().trimmed().isEmpty()
             ? defaultDataDirForNetwork(config.network)
@@ -1576,6 +1582,43 @@ QString MainWindow::guessedDaemonPath() const {
     return {};
 }
 
+QString MainWindow::resolvedDaemonPath(bool* recovered, QString* recoveryDetail) const {
+    if (recovered) *recovered = false;
+    if (recoveryDetail) recoveryDetail->clear();
+
+    const auto configuredRaw = daemonPathEdit_ ? daemonPathEdit_->text().trimmed() : QString();
+    const auto configured = configuredRaw.isEmpty() ? QString() : QDir::cleanPath(configuredRaw);
+    const auto bundledRaw = guessedDaemonPath();
+    const auto bundled = bundledRaw.isEmpty() ? QString() : QDir::cleanPath(bundledRaw);
+
+    if (configured.isEmpty()) {
+        return bundled;
+    }
+    if (bundled.isEmpty() || configured == bundled) {
+        return configured;
+    }
+
+    if (!QFileInfo::exists(configured)) {
+        if (recovered) *recovered = true;
+        if (recoveryDetail) {
+            *recoveryDetail = QStringLiteral("Saved backend path was missing; switched to bundled daemon: %1")
+                                  .arg(bundled);
+        }
+        return bundled;
+    }
+
+    if (pathLooksLikeDevelopmentArtifact(configured)) {
+        if (recovered) *recovered = true;
+        if (recoveryDetail) {
+            *recoveryDetail = QStringLiteral("Saved backend path pointed to a development build; switched to bundled daemon: %1")
+                                  .arg(bundled);
+        }
+        return bundled;
+    }
+
+    return configured;
+}
+
 QString MainWindow::defaultDataDirForNetwork(const QString& network) const {
     QString baseDir;
 #ifdef Q_OS_WIN
@@ -1662,10 +1705,18 @@ void MainWindow::applyAutomaticBackendDefaults() {
     const auto network = networkCombo_->currentText().trimmed();
 
     const auto daemonGuess = guessedDaemonPath();
-    const auto currentDaemon = daemonPathEdit_->text().trimmed();
+    const auto currentDaemonRaw = daemonPathEdit_->text().trimmed();
+    const auto currentDaemon = currentDaemonRaw.isEmpty() ? QString() : QDir::cleanPath(currentDaemonRaw);
+    const auto normalizedAutoDaemon = autoDaemonPath_.isEmpty() ? QString() : QDir::cleanPath(autoDaemonPath_);
     const bool currentDaemonMissing = !currentDaemon.isEmpty() && !QFileInfo::exists(currentDaemon);
-    if (currentDaemon.isEmpty() || currentDaemonMissing ||
-        (!autoDaemonPath_.isEmpty() && currentDaemon == autoDaemonPath_)) {
+    const bool preferBundledDaemon =
+        !daemonGuess.isEmpty() &&
+        (currentDaemon.isEmpty() ||
+         currentDaemonMissing ||
+         (!normalizedAutoDaemon.isEmpty() && currentDaemon == normalizedAutoDaemon) ||
+         (pathLooksLikeDevelopmentArtifact(currentDaemon) &&
+          currentDaemon != QDir::cleanPath(daemonGuess)));
+    if (preferBundledDaemon) {
         daemonPathEdit_->setText(daemonGuess);
     }
     autoDaemonPath_ = daemonGuess;
@@ -2081,8 +2132,20 @@ void MainWindow::loadSettings() {
     networkCombo_->setCurrentText(settings.value(QStringLiteral("backend/network"), QStringLiteral("mainnet")).toString());
     setAdvancedModeEnabled(settings.value(QStringLiteral("ui/advanced_mode"), false).toBool());
     applyAutomaticBackendDefaults();
+    bool daemonRecovered = false;
+    QString daemonRecoveryDetail;
+    const auto recoveredDaemonPath = resolvedDaemonPath(&daemonRecovered, &daemonRecoveryDetail);
+    if (!recoveredDaemonPath.isEmpty() && daemonPathEdit_->text().trimmed() != recoveredDaemonPath) {
+        daemonPathEdit_->setText(recoveredDaemonPath);
+    }
+    if (daemonRecovered && systemLogView_) {
+        systemLogView_->appendPlainText(QStringLiteral("[gui] %1").arg(daemonRecoveryDetail));
+    }
     applyConfigBackedDefaults();
     syncWalletPathFromDataDir();
+    if (daemonRecovered) {
+        saveSettings();
+    }
 }
 
 void MainWindow::saveSettings() {
@@ -2619,17 +2682,22 @@ void MainWindow::startBackend() {
 
 void MainWindow::launchBackendProcess() {
     DaemonController::LaunchConfig config;
+    bool daemonRecovered = false;
+    QString daemonRecoveryDetail;
     const auto requestedDaemonPath = daemonPathEdit_->text().trimmed();
-    config.executablePath = (!requestedDaemonPath.isEmpty() && QFileInfo::exists(requestedDaemonPath))
-        ? requestedDaemonPath
-        : guessedDaemonPath();
+    config.executablePath = resolvedDaemonPath(&daemonRecovered, &daemonRecoveryDetail);
     if (config.executablePath != requestedDaemonPath) {
         daemonPathEdit_->setText(config.executablePath);
-        if (!requestedDaemonPath.isEmpty()) {
-            systemLogView_->appendPlainText(
-                QStringLiteral("[gui] Saved backend path was missing; falling back to bundled daemon: %1")
-                    .arg(config.executablePath));
+        if (!requestedDaemonPath.isEmpty() && systemLogView_) {
+            if (daemonRecovered && !daemonRecoveryDetail.isEmpty()) {
+                systemLogView_->appendPlainText(QStringLiteral("[gui] %1").arg(daemonRecoveryDetail));
+            } else {
+                systemLogView_->appendPlainText(
+                    QStringLiteral("[gui] Saved backend path was missing; falling back to bundled daemon: %1")
+                        .arg(config.executablePath));
+            }
         }
+        saveSettings();
     }
     config.network = networkCombo_->currentText();
     config.dataDir = dataDirEdit_->text().trimmed().isEmpty()

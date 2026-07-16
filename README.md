@@ -2,6 +2,8 @@
 
 Cortex Project is a school demonstration repository for an AI-assisted decentralized banking solution.
 
+Current school release: `v0.1.2`
+
 This repository packages a desktop client, backend node, wallet logic, and supporting communication features into a single Windows-friendly project for presentation and evaluation.
 
 ## Project Focus

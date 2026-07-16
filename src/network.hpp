@@ -446,6 +446,7 @@ private:
     Message build_getheaders_request() const;
     Message build_version_message() const;
     void request_headers_from(const std::shared_ptr<PeerSession>& peer);
+    void note_peer_announced_height(const std::string& label, uint32_t height);
     void enqueue_block_download(const uint256_t& hash, const std::shared_ptr<PeerSession>& peer);
     void pump_block_downloads();
     void finish_block_download(const uint256_t& hash);

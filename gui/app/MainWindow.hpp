@@ -100,6 +100,7 @@ private:
     void handleBackendPortConflict(const QString& detail = QString());
     void stopBackend();
     QString guessedDaemonPath() const;
+    QString resolvedDaemonPath(bool* recovered = nullptr, QString* recoveryDetail = nullptr) const;
     void setConnectionStatus(const QString& text, bool error = false);
     void refreshCheckpointManager();
     void setAdvancedModeEnabled(bool enabled);
